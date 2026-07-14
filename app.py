@@ -45,6 +45,19 @@ st.sidebar.caption("Enter a ticker to explore price, metrics and news.")
 ticker = st.sidebar.text_input("Stock ticker", value="AAPL", placeholder="e.g. AAPL, MSFT, TSLA")
 choice = st.sidebar.selectbox("Chart time period", list(PERIODS.keys()), index=3)
 
+st.sidebar.divider()
+st.sidebar.caption("Compare up to 3 stocks (normalized).")
+_popular = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META"]
+_options = sorted(set(_popular + ([ticker.upper()] if ticker else [])))
+_default = [ticker.upper()] if ticker and ticker.upper() in _options else []
+compare = st.sidebar.multiselect(
+    "Compare stocks",
+    options=_options,
+    default=_default,
+    max_selections=3,
+    accept_new_options=True,
+)
+
 # ------------------------------------------------------------------ Main
 st.title("Stock Price Viewer")
 
@@ -133,6 +146,39 @@ with right:
         margin=dict(t=20, b=40, l=40, r=20),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------- Comparison
+st.divider()
+st.subheader(f"Compare Stocks · Normalized to 100 · {choice}")
+
+symbols = list(dict.fromkeys(s.strip().upper() for s in compare if s.strip()))
+if len(symbols) < 2:
+    st.info("Select at least 2 stocks in the sidebar to compare their performance.")
+else:
+    cfig = go.Figure()
+    plotted = 0
+    for sym in symbols:
+        h = yf.Ticker(sym).history(period=PERIODS[choice])
+        if h.empty:
+            st.warning(f"No data for '{sym}' — skipping.")
+            continue
+        # Index every stock to 100 at the start so % moves are directly comparable.
+        norm = h["Close"] / h["Close"].iloc[0] * 100
+        cfig.add_trace(go.Scatter(x=h.index, y=norm, mode="lines", name=sym, line=dict(width=2)))
+        plotted += 1
+
+    if plotted:
+        cfig.add_hline(y=100, line_dash="dash", line_color="gray", opacity=0.5)
+        cfig.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Normalized price (start = 100)",
+            hovermode="x unified",
+            template="plotly_white",
+            height=460,
+            margin=dict(t=20, b=40, l=40, r=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(cfig, use_container_width=True)
 
 # ---------------------------------------------------------------- News
 st.divider()

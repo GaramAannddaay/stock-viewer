@@ -4,6 +4,22 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Stock Price Viewer", page_icon="📈", layout="wide")
 
+# Compact typography for a cleaner, denser dashboard look.
+st.markdown(
+    """
+    <style>
+    [data-testid="stMetricValue"] { font-size: 1.25rem; }
+    [data-testid="stMetricLabel"] p { font-size: 0.78rem; color: #6b7280; }
+    [data-testid="stMetricDelta"] { font-size: 0.75rem; }
+    [data-testid="stMetric"] { padding: 2px 0; }
+    h1 { font-size: 1.6rem; }
+    h2, [data-testid="stHeadingWithActionElements"] h2 { font-size: 1.15rem; }
+    div[data-testid="stVerticalBlock"] { gap: 0.6rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 def money(value):
     """Turn a big number into $1.23T / $4.56B / $7.89M style text."""
@@ -37,6 +53,7 @@ PERIODS = {
     "1 Year": "1y",
     "3 Years": "3y",
     "5 Years": "5y",
+    "All Time": "max",
 }
 
 # ------------------------------------------------------------------ Sidebar
@@ -83,6 +100,11 @@ day_pct = (day_change / prev_close * 100) if prev_close else 0
 period_change = price - start_close
 period_pct = (period_change / start_close * 100) if start_close else 0
 
+# All-time high/low always use the full available history (reuse if already loaded).
+full = history if PERIODS[choice] == "max" else stock.history(period="max")
+all_time_high = full["High"].max() if not full.empty else None
+all_time_low = full["Low"].min() if not full.empty else None
+
 company = info.get("longName") or info.get("shortName") or ticker.upper()
 
 left, right = st.columns([1, 1], gap="large")
@@ -111,6 +133,9 @@ with left:
     p2 = st.columns(2)
     p2[0].metric("Period Low", num(history["Low"].min()))
     p2[1].metric("52-Week High", num(info.get("fiftyTwoWeekHigh")))
+    p3 = st.columns(2)
+    p3[0].metric("All-Time High", num(all_time_high))
+    p3[1].metric("All-Time Low", num(all_time_low))
 
     st.markdown(f"**Volume · {choice}**")
     vol = st.columns(2)

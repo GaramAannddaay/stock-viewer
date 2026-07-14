@@ -1,3 +1,5 @@
+import time
+
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
@@ -46,6 +48,35 @@ def volume(value):
     return f"{value:,.0f}"
 
 
+def _retry(fn, tries=3):
+    """Call fn(), retrying briefly on transient Yahoo Finance rate limits."""
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - surface the last error to the caller
+            last = e
+            time.sleep(1.0 * (i + 1))
+    raise last
+
+
+# Cache each fetch for 10 min so re-runs (dropdown clicks) don't re-hit Yahoo and
+# trip its rate limiter. Only successful results are cached; errors are retried.
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_history(symbol, period):
+    return _retry(lambda: yf.Ticker(symbol).history(period=period))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_info(symbol):
+    return _retry(lambda: yf.Ticker(symbol).info)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_news(symbol):
+    return _retry(lambda: yf.Ticker(symbol).news)
+
+
 PERIODS = {
     "1 Month": "1mo",
     "3 Months": "3mo",
@@ -82,13 +113,26 @@ if not ticker:
     st.info("👈 Enter a stock ticker in the sidebar to get started.")
     st.stop()
 
-stock = yf.Ticker(ticker)
-info = stock.info
-history = stock.history(period=PERIODS[choice])
+try:
+    history = fetch_history(ticker, PERIODS[choice])
+except Exception:
+    st.error(
+        "⚠️ Yahoo Finance is rate-limiting requests right now — this is common on shared "
+        "cloud hosting. Please wait a minute and refresh the page."
+    )
+    st.stop()
 
 if history.empty:
     st.error(f"Could not find any data for '{ticker}'. Check the ticker and try again.")
     st.stop()
+
+# Fundamentals come from .info, which is the most rate-limit-prone call. If it fails,
+# degrade gracefully: the chart and period metrics still work from the price history.
+try:
+    info = fetch_info(ticker)
+except Exception:
+    info = {}
+    st.warning("Fundamental data (P/E, market cap, etc.) is temporarily unavailable due to rate limits.")
 
 # One period history powers both the chart and the period-aware metrics.
 price = history["Close"].iloc[-1]
@@ -101,7 +145,10 @@ period_change = price - start_close
 period_pct = (period_change / start_close * 100) if start_close else 0
 
 # All-time high/low always use the full available history (reuse if already loaded).
-full = history if PERIODS[choice] == "max" else stock.history(period="max")
+try:
+    full = history if PERIODS[choice] == "max" else fetch_history(ticker, "max")
+except Exception:
+    full = history
 all_time_high = full["High"].max() if not full.empty else None
 all_time_low = full["Low"].min() if not full.empty else None
 
@@ -183,7 +230,11 @@ else:
     cfig = go.Figure()
     plotted = 0
     for sym in symbols:
-        h = yf.Ticker(sym).history(period=PERIODS[choice])
+        try:
+            h = fetch_history(sym, PERIODS[choice])
+        except Exception:
+            st.warning(f"Could not load '{sym}' (rate limited) — skipping.")
+            continue
         if h.empty:
             st.warning(f"No data for '{sym}' — skipping.")
             continue
@@ -209,7 +260,10 @@ else:
 st.divider()
 st.subheader("Latest News")
 
-articles = stock.news or []
+try:
+    articles = fetch_news(ticker) or []
+except Exception:
+    articles = []
 if not articles:
     st.info("No recent news found for this stock.")
 else:

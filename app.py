@@ -77,6 +77,36 @@ def fetch_news(symbol):
     return _retry(lambda: yf.Ticker(symbol).news)
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_fast_info(symbol):
+    # fast_info is a lightweight, far more reliable endpoint than .info.
+    fi = yf.Ticker(symbol).fast_info
+    return {k: fi[k] for k in fi.keys()}
+
+
+def load_fundamentals(symbol):
+    """Full fundamentals from .info; if rate-limited, fall back to fast_info.
+
+    Returns (info_dict, is_full) — is_full is False when only fast_info was available
+    (P/E, EV/EBITDA and dividend yield are missing in that case).
+    """
+    try:
+        info = fetch_info(symbol)
+        if info and info.get("marketCap"):
+            return info, True
+    except Exception:
+        pass
+    try:
+        fast = fetch_fast_info(symbol)
+        return {
+            "marketCap": fast.get("marketCap"),
+            "fiftyTwoWeekHigh": fast.get("yearHigh"),
+            "fiftyTwoWeekLow": fast.get("yearLow"),
+        }, False
+    except Exception:
+        return {}, False
+
+
 PERIODS = {
     "1 Month": "1mo",
     "3 Months": "3mo",
@@ -126,13 +156,8 @@ if history.empty:
     st.error(f"Could not find any data for '{ticker}'. Check the ticker and try again.")
     st.stop()
 
-# Fundamentals come from .info, which is the most rate-limit-prone call. If it fails,
-# degrade gracefully: the chart and period metrics still work from the price history.
-try:
-    info = fetch_info(ticker)
-except Exception:
-    info = {}
-    st.warning("Fundamental data (P/E, market cap, etc.) is temporarily unavailable due to rate limits.")
+# Fundamentals: full .info if available, otherwise the reliable fast_info fallback.
+info, full_info = load_fundamentals(ticker)
 
 # One period history powers both the chart and the period-aware metrics.
 price = history["Close"].iloc[-1]
@@ -166,6 +191,8 @@ with left:
     )
 
     st.markdown("**Valuation**")
+    if not full_info:
+        st.caption("⚠️ P/E, EV/EBITDA & dividend yield unavailable right now (rate limited).")
     v = st.columns(2)
     v[0].metric("Market Cap", money(info.get("marketCap")))
     v[1].metric("P/E Ratio", num(info.get("trailingPE")))

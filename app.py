@@ -1,5 +1,6 @@
 import time
 
+import pandas as pd
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
@@ -64,7 +65,13 @@ def _retry(fn, tries=3):
 # trip its rate limiter. Only successful results are cached; errors are retried.
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_history(symbol, period):
-    return _retry(lambda: yf.Ticker(symbol).history(period=period))
+    df = _retry(lambda: yf.Ticker(symbol).history(period=period))
+    # Yahoo sometimes returns a trailing row for the current session with empty
+    # prices. Plotly skips NaN silently, but .iloc[-1] would read it as NaN and
+    # show "$nan", so drop those rows here for every consumer.
+    if not df.empty:
+        df = df.dropna(subset=["Close"])
+    return df
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -82,6 +89,64 @@ def fetch_fast_info(symbol):
     # fast_info is a lightweight, far more reliable endpoint than .info.
     fi = yf.Ticker(symbol).fast_info
     return {k: fi[k] for k in fi.keys()}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_financials(symbol):
+    t = yf.Ticker(symbol)
+    return _retry(lambda: (t.income_stmt, t.balance_sheet, t.cashflow))
+
+
+# Curated highlight rows per statement, in the order a reader expects them.
+INCOME_ROWS = [
+    "Total Revenue",
+    "Cost Of Revenue",
+    "Gross Profit",
+    "Operating Expense",
+    "Research And Development",
+    "Operating Income",
+    "EBITDA",
+    "Pretax Income",
+    "Tax Provision",
+    "Net Income",
+    "Diluted EPS",
+]
+
+BALANCE_ROWS = [
+    "Total Assets",
+    "Total Non Current Assets",
+    "Current Liabilities",
+    "Total Liabilities Net Minority Interest",
+    "Stockholders Equity",
+    "Retained Earnings",
+    "Total Debt",
+    "Net Debt",
+    "Working Capital",
+    "Tangible Book Value",
+    "Ordinary Shares Number",
+]
+
+CASHFLOW_ROWS = [
+    "Operating Cash Flow",
+    "Investing Cash Flow",
+    "Financing Cash Flow",
+    "Free Cash Flow",
+    "Capital Expenditure",
+    "Repurchase Of Capital Stock",
+    "Cash Dividends Paid",
+    "Changes In Cash",
+]
+
+
+def statement_table(df, rows):
+    """Pick the highlight rows that exist, format values, label columns by year."""
+    if df is None or df.empty:
+        return None
+    keep = [r for r in rows if r in df.index]
+    out = df.loc[keep] if keep else df
+    out = out.copy()
+    out.columns = [str(c)[:10] for c in out.columns]
+    return out.apply(lambda col: col.map(lambda v: "—" if pd.isna(v) else money(v)))
 
 
 def load_fundamentals(symbol):
@@ -179,7 +244,7 @@ all_time_low = full["Low"].min() if not full.empty else None
 
 company = info.get("longName") or info.get("shortName") or ticker.upper()
 
-left, right = st.columns([1, 1], gap="large")
+left, right = st.columns([1, 1.7], gap="large")
 
 # ----------------------------------------------------- Left: price + metrics
 with left:
@@ -241,10 +306,38 @@ with right:
         yaxis_title="Price ($)",
         hovermode="x unified",
         template="plotly_white",
-        height=460,
+        height=520,
         margin=dict(t=20, b=40, l=40, r=20),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------------------------------------- Financials
+st.divider()
+st.subheader(f"Financials · {company}")
+
+try:
+    income, balance, cash = fetch_financials(ticker)
+except Exception:
+    income = balance = cash = None
+
+if income is None and balance is None and cash is None:
+    st.info("Financial statements are temporarily unavailable (rate limited). Try refreshing in a minute.")
+else:
+    tab_income, tab_balance, tab_cash = st.tabs(
+        ["Income Statement", "Balance Sheet Highlights", "Cash Flow Statement"]
+    )
+    for tab, df, rows, label in [
+        (tab_income, income, INCOME_ROWS, "income statement"),
+        (tab_balance, balance, BALANCE_ROWS, "balance sheet"),
+        (tab_cash, cash, CASHFLOW_ROWS, "cash flow"),
+    ]:
+        with tab:
+            table = statement_table(df, rows)
+            if table is None:
+                st.info(f"No {label} data available for this ticker.")
+            else:
+                st.caption("Annual figures, most recent year first.")
+                st.dataframe(table, use_container_width=True)
 
 # ---------------------------------------------------------- Comparison
 st.divider()
